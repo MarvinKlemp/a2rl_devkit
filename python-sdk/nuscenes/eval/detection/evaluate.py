@@ -117,6 +117,36 @@ class DetectionEval:
 
         self.sample_tokens = self.gt_boxes.sample_tokens
 
+    def filter_boxes_by_distance_range(self, gt_boxes, min_distance, max_distance):
+        """
+        Filters ground truth boxes by a specified distance range.
+        :param gt_boxes: List of ground truth boxes.
+        :param min_distance: Minimum distance for the filter.
+        :param max_distance: Maximum distance for the filter.
+        :return: Filtered list of GT boxes within the specified distance range.
+        """
+        filtered_boxes = EvalBoxes()  # Create a new EvalBoxes instance to store filtered boxes.
+
+        for sample_token in gt_boxes.sample_tokens:
+            for box in gt_boxes[sample_token]:
+                distance = np.linalg.norm(box.translation)  # Calculate Euclidean distance to the box center.
+                if min_distance <= distance < max_distance:
+                    filtered_boxes.add_boxes(sample_token, [box])  # Add box to filtered_boxes if within range.
+
+        return filtered_boxes
+    
+
+    def filter_boxes_by_sample(self, gt_boxes: EvalBoxes, pred_boxes: EvalBoxes) -> EvalBoxes:
+        keys = {box.sample_token for box in gt_boxes.all}
+        filtered_pred_boxes = EvalBoxes()
+
+        for box in pred_boxes.all:
+            if box.sample_token in keys:
+                filtered_pred_boxes.add_boxes(box.sample_token, [box])
+
+        return filtered_pred_boxes
+    
+    
     def evaluate(self) -> Tuple[DetectionMetrics, DetectionMetricDataList]:
         """
         Performs the actual evaluation.
