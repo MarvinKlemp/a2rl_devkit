@@ -163,6 +163,75 @@ class DetectionEval:
         metrics.add_runtime(time.time() - start_time)
 
         return metrics, metric_data_list
+    
+
+    def evaluate_bins(self) -> Tuple[List[DetectionMetrics], List[DetectionMetricDataList]]:
+        """
+        Performs the actual evaluation with AP for different distance bins.
+        """
+        start_time = time.time()
+
+        # Define distance bins as needed.
+        distance_bins = [(0, 80), (80, 130), (130, float('inf'))]
+
+        # Prepare containers for metric data and results by distance bin
+        metric_data_lists = {f"{bin_min}-{bin_max}": DetectionMetricDataList() for bin_min, bin_max in distance_bins}
+        metrics_by_bin = {f"{bin_min}-{bin_max}": DetectionMetrics(self.cfg) for bin_min, bin_max in distance_bins}
+
+        # -----------------------------------
+        # Single loop to accumulate and calculate metrics per class, distance threshold, and distance bin.
+        # -----------------------------------
+        if self.verbose:
+            print('Accumulating and calculating metrics...')
+
+        for class_name in self.cfg.class_names:
+            for dist_th in self.cfg.dist_ths:
+                for bin_min, bin_max in distance_bins:
+                    bin_key = f"{bin_min}-{bin_max}"
+
+                    # Debug this -> why do we get good results for gt_boxes, but bad ones with filte_boxes_by_distance
+                    # md_ = accumulate(self.gt_boxes, self.pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
+
+                    # bad results here
+                    filtered_gt_boxes = self.filter_boxes_by_distance_range(self.gt_boxes, bin_min, bin_max)
+                    filtered_pred_boxes = self.filter_boxes_by_sample(filtered_gt_boxes, self.pred_boxes)
+                    md = accumulate(filtered_gt_boxes, filtered_pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
+                    
+                    metric_data_lists[bin_key].set(class_name, dist_th, md)
+
+
+        # -----------------------------------
+        # Compute mAP and TP metrics after accumulating data in a single loop.
+        # -----------------------------------
+        for bin_min, bin_max in distance_bins:
+            bin_key = f"{bin_min}-{bin_max}"
+            metrics = metrics_by_bin[bin_key]
+            metric_data_list = metric_data_lists[bin_key]
+
+            for class_name in self.cfg.class_names:
+                for dist_th in self.cfg.dist_ths:
+                    metric_data = metric_data_list[(class_name, dist_th)]
+                    ap = calc_ap(metric_data, self.cfg.min_recall, self.cfg.min_precision)
+                    metrics.add_label_ap(class_name, dist_th, ap)
+
+                # Compute TP metrics
+                for metric_name in TP_METRICS:
+                    metric_data = metric_data_lists[bin_key][(class_name, self.cfg.dist_th_tp)]
+                    if class_name in ['traffic_cone'] and metric_name in ['attr_err', 'vel_err', 'orient_err']:
+                        tp = np.nan
+                    elif class_name in ['barrier'] and metric_name in ['attr_err', 'vel_err']:
+                        tp = np.nan
+                    else:
+                        tp = calc_tp(metric_data, self.cfg.min_recall, metric_name)
+                    metrics.add_label_tp(class_name, metric_name, tp)
+
+        # Add evaluation time to all metrics
+        total_time = time.time() - start_time
+        for metrics in metrics_by_bin.values():
+            metrics.add_runtime(total_time)
+
+        return metrics_by_bin, metric_data_lists
+
 
     def render(self, metrics: DetectionMetrics, md_list: DetectionMetricDataList) -> None:
         """
@@ -219,7 +288,52 @@ class DetectionEval:
                                  eval_range=max(self.cfg.class_range.values()),
                                  savepath=os.path.join(example_dir, '{}.png'.format(sample_token)))
 
-        # Run evaluation.
+        # Run evaluation by bins
+        print('===================================================')
+        print('Evaluation by distance bins')
+        metrics, metric_data_list = self.evaluate_bins()
+        for bin_key in metrics.keys():
+            print(bin_key)
+            print("---------------------------------------------")
+            metrics_summary = metrics[bin_key].serialize()
+            metrics_summary['meta'] = self.meta.copy()
+            with open(os.path.join(self.output_dir, f'metrics_summary_{bin_key}.json'), 'w') as f:
+                json.dump(metrics_summary, f, indent=2)
+            with open(os.path.join(self.output_dir, f'metrics_details_{bin_key}.json'), 'w') as f:
+                json.dump(metric_data_list[bin_key].serialize(), f, indent=2)
+
+            # Print high-level metrics.
+            print('mAP: %.4f' % (metrics_summary['mean_ap']))
+            err_name_mapping = {
+                'trans_err': 'mATE',
+                'scale_err': 'mASE',
+                'orient_err': 'mAOE',
+                'vel_err': 'mAVE',
+                'attr_err': 'mAAE'
+            }
+            for tp_name, tp_val in metrics_summary['tp_errors'].items():
+                print('%s: %.4f' % (err_name_mapping[tp_name], tp_val))
+            print('NDS: %.4f' % (metrics_summary['nd_score']))
+            print('Eval time: %.1fs' % metrics_summary['eval_time'])
+
+            # Print per-class metrics.
+            print()
+            print('Per-class results:')
+            print('Object Class\tAP\tATE\tASE\tAOE\tAVE\tAAE')
+            class_aps = metrics_summary['mean_dist_aps']
+            class_tps = metrics_summary['label_tp_errors']
+            for class_name in class_aps.keys():
+                print('%s\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f'
+                    % (class_name, class_aps[class_name],
+                        class_tps[class_name]['trans_err'],
+                        class_tps[class_name]['scale_err'],
+                        class_tps[class_name]['orient_err'],
+                        class_tps[class_name]['vel_err'],
+                        class_tps[class_name]['attr_err']))
+
+        print('===================================================')
+
+        print('Regular NUS Evaluation')
         metrics, metric_data_list = self.evaluate()
 
         # Render PR and TP curves.
