@@ -146,7 +146,7 @@ class DetectionEval:
 
         return filtered_pred_boxes
     
-    
+
     def evaluate(self) -> Tuple[DetectionMetrics, DetectionMetricDataList]:
         """
         Performs the actual evaluation.
@@ -454,7 +454,7 @@ if __name__ == "__main__":
     verbose_ = bool(args.verbose)
 
     if config_path == '':
-        cfg_ = config_factory('detection_cvpr_2019')
+        cfg_ = config_factory('detection_a2rl_2025')
     else:
         with open(config_path, 'r') as _f:
             cfg_ = DetectionConfig.deserialize(json.load(_f))
